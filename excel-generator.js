@@ -2,6 +2,65 @@ const ExcelJS = require('exceljs');
 const path = require('path');
 
 /**
+ * Categorizes a URL path into common web page sections.
+ * 
+ * @param {string} urlStr - The URL to categorize.
+ * @returns {string} The matched page category name.
+ */
+function categorizeUrl(urlStr) {
+  try {
+    const urlObj = new URL(urlStr);
+    const path = urlObj.pathname.toLowerCase();
+    
+    if (path.includes('/people/') || path.includes('/professionals/') || path.includes('/attorneys/') || path.includes('/biography/')) {
+      return 'People';
+    }
+    if (path.includes('/news/') || path.includes('/press/') || path.includes('/press-releases/')) {
+      return 'News';
+    }
+    if (path.includes('/events/') || path.includes('/webinars/') || path.includes('/seminars/')) {
+      return 'Events';
+    }
+    if (path.includes('/blog/') || path.includes('/blogs/')) {
+      return 'Blogs';
+    }
+    if (path.includes('/services/') || path.includes('/practices/') || path.includes('/capabilities/')) {
+      return 'Services';
+    }
+    if (path.includes('/industries/') || path.includes('/sectors/')) {
+      return 'Industries';
+    }
+    if (path.includes('/publications/') || path.includes('/articles/') || path.includes('/newsletters/')) {
+      return 'Publications';
+    }
+    if (path.includes('/insights/') || path.includes('/thought-leadership/')) {
+      return 'Insights';
+    }
+    if (path.includes('/about/') || path.includes('/about-us/') || path.includes('/our-firm/')) {
+      return 'About Us';
+    }
+    if (path.includes('/client-stories/') || path.includes('/case-studies/') || path.includes('/testimonials/')) {
+      return 'Client Stories';
+    }
+    if (path.includes('/careers/') || path.includes('/jobs/')) {
+      return 'Careers';
+    }
+    if (path.includes('/offices/') || path.includes('/locations/') || path.includes('/contact/') || path.includes('/contact-us/')) {
+      return 'Offices & Contacts';
+    }
+    
+    // Check if it's the home page
+    if (path === '/' || path === '') {
+      return 'Home Page';
+    }
+    
+    return 'General Information';
+  } catch (e) {
+    return 'General Information';
+  }
+}
+
+/**
  * Generates a styled Excel report for the domain scan.
  * 
  * @param {string} domain - The base domain scanned.
@@ -130,49 +189,112 @@ async function generateExcelReport(domain, subdomainsData, blogArticlesData, tec
 
 
   // ==========================================
-  // TAB 2: Blogs and Articles
+  // TAB 2: Categorization & Blogs
   // ==========================================
-  const wsBlogs = workbook.addWorksheet('Blogs & Articles');
+  const wsBlogs = workbook.addWorksheet('Page Categorization & Blogs');
   wsBlogs.views = [{ showGridLines: true }];
 
   // Title block
-  wsBlogs.mergeCells('A1:C1');
+  wsBlogs.mergeCells('A1:F1');
   const titleRow2 = wsBlogs.getCell('A1');
-  titleRow2.value = `Blog & Article Links Found`;
+  titleRow2.value = `Content breakdown & Blog/Article Discovery`;
   titleRow2.font = titleFont;
   wsBlogs.getRow(1).height = 30;
 
-  // Total count indicator card style
-  wsBlogs.getCell('A2').value = `Total Articles/Blogs:`;
-  wsBlogs.getCell('A2').font = cellFont;
-  wsBlogs.getCell('B2').value = blogArticlesData.length;
-  wsBlogs.getCell('B2').font = { name: 'Segoe UI', size: 12, bold: true, color: { argb: colors.accent } };
-  wsBlogs.getRow(2).height = 20;
+  // Let's count categories in subdomainsData
+  const categoriesList = [
+    'Publications', 'News', 'Events', 'People', 'Blogs', 'Services', 
+    'Industries', 'Insights', 'About Us', 'Client Stories', 'Careers', 
+    'Offices & Contacts', 'Home Page', 'General Information'
+  ];
+  const categoryCounts = {};
+  categoriesList.forEach(cat => categoryCounts[cat] = 0);
 
-  // Table Headers
-  const headersTab2 = ['No.', 'Blog / Article URL', 'Main Subdomain Source'];
-  wsBlogs.getRow(4).values = headersTab2;
-  wsBlogs.getRow(4).height = 25;
-
-  headersTab2.forEach((_, colIndex) => {
-    const cell = wsBlogs.getCell(4, colIndex + 1);
-    cell.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: colors.primary }
-    };
-    cell.font = headerFont;
-    cell.alignment = { vertical: 'middle', horizontal: colIndex === 0 ? 'center' : 'left' };
+  subdomainsData.forEach(page => {
+    const cat = categorizeUrl(page.url);
+    categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
   });
 
-  // Populate Blogs Data
+  // Table 1 Header (A4:B4) - Page Breakdown Summary
+  wsBlogs.getCell('A3').value = 'Page Categories (Scanned)';
+  wsBlogs.getCell('A3').font = boldCellFont;
+  wsBlogs.getCell('A4').value = 'Category';
+  wsBlogs.getCell('B4').value = 'Count';
+  wsBlogs.getCell('A4').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.primary } };
+  wsBlogs.getCell('A4').font = headerFont;
+  wsBlogs.getCell('B4').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.primary } };
+  wsBlogs.getCell('B4').font = headerFont;
+  wsBlogs.getCell('B4').alignment = { horizontal: 'center' };
+
+  // Populate Categories Table
+  let catRowIdx = 5;
+  categoriesList.forEach(cat => {
+    wsBlogs.getCell(`A${catRowIdx}`).value = cat;
+    wsBlogs.getCell(`B${catRowIdx}`).value = categoryCounts[cat];
+    wsBlogs.getCell(`A${catRowIdx}`).border = thinBorder;
+    wsBlogs.getCell(`A${catRowIdx}`).font = cellFont;
+    wsBlogs.getCell(`B${catRowIdx}`).border = thinBorder;
+    wsBlogs.getCell(`B${catRowIdx}`).font = boldCellFont;
+    wsBlogs.getCell(`B${catRowIdx}`).alignment = { horizontal: 'center' };
+    catRowIdx++;
+  });
+
+  // Table 2 Header (D3:F4) - Discovered Blogs
+  wsBlogs.getCell('D3').value = 'Discovered Blog & Article Links';
+  wsBlogs.getCell('D3').font = boldCellFont;
+  wsBlogs.getCell('D4').value = 'No.';
+  wsBlogs.getCell('E4').value = 'Blog / Article URL';
+  wsBlogs.getCell('F4').value = 'Discovered On';
+  ['D4', 'E4', 'F4'].forEach(cellRef => {
+    const cell = wsBlogs.getCell(cellRef);
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.primary } };
+    cell.font = headerFont;
+  });
+  wsBlogs.getCell('D4').alignment = { horizontal: 'center' };
+
+  // Populate Blogs Table
+  let blogRowIdx = 5;
   blogArticlesData.forEach((item, idx) => {
-    const rowIndex = idx + 5;
+    wsBlogs.getCell(`D${blogRowIdx}`).value = idx + 1;
+    wsBlogs.getCell(`E${blogRowIdx}`).value = item.url;
+    wsBlogs.getCell(`F${blogRowIdx}`).value = item.source;
+    
+    wsBlogs.getCell(`D${blogRowIdx}`).border = thinBorder;
+    wsBlogs.getCell(`D${blogRowIdx}`).font = cellFont;
+    wsBlogs.getCell(`D${blogRowIdx}`).alignment = { horizontal: 'center' };
+    
+    wsBlogs.getCell(`E${blogRowIdx}`).border = thinBorder;
+    wsBlogs.getCell(`E${blogRowIdx}`).font = { name: 'Segoe UI', size: 10, color: { argb: '2563EB' }, underline: true };
+    
+    wsBlogs.getCell(`F${blogRowIdx}`).border = thinBorder;
+    wsBlogs.getCell(`F${blogRowIdx}`).font = cellFont;
+    
+    blogRowIdx++;
+  });
+
+  // Detailed Scanned Pages Table starting at row 22
+  const detailStartRow = Math.max(catRowIdx, blogRowIdx) + 2;
+  wsBlogs.getCell(`A${detailStartRow - 1}`).value = 'Detailed Scanned Pages & Category Mapping';
+  wsBlogs.getCell(`A${detailStartRow - 1}`).font = boldCellFont;
+
+  const detailHeaders = ['URL / Page', 'Category', 'Response Code'];
+  wsBlogs.getRow(detailStartRow).values = detailHeaders;
+  wsBlogs.getRow(detailStartRow).height = 25;
+
+  detailHeaders.forEach((_, colIndex) => {
+    const cell = wsBlogs.getCell(detailStartRow, colIndex + 1);
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.primary } };
+    cell.font = headerFont;
+    cell.alignment = { vertical: 'middle', horizontal: colIndex === 0 ? 'left' : 'center' };
+  });
+
+  subdomainsData.forEach((page, idx) => {
+    const rowIndex = detailStartRow + 1 + idx;
     const row = wsBlogs.getRow(rowIndex);
     row.values = [
-      idx + 1,
-      item.url,
-      item.source
+      page.url,
+      categorizeUrl(page.url),
+      page.status || '-'
     ];
     row.height = 20;
 
@@ -180,13 +302,13 @@ async function generateExcelReport(domain, subdomainsData, blogArticlesData, tec
       const cell = wsBlogs.getCell(rowIndex, c);
       cell.font = cellFont;
       cell.border = thinBorder;
-      cell.alignment = { vertical: 'middle', horizontal: c === 1 ? 'center' : 'left' };
+      cell.alignment = { vertical: 'middle', horizontal: c === 1 ? 'left' : 'center' };
       if (c === 2) {
-        // Style URLs nicely
-        cell.font = { name: 'Segoe UI', size: 10, color: { argb: '2563EB' }, underline: true };
+        cell.font = boldCellFont;
       }
     }
   });
+
   autofitColumns(wsBlogs);
 
 

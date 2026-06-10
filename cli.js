@@ -89,6 +89,21 @@ function normalizeUrl(urlStr) {
   }
 }
 
+// Helper to format duration in ms as hh::mm::ss.ms
+function formatDuration(ms) {
+  const hours = Math.floor(ms / 3600000);
+  const minutes = Math.floor((ms % 3600000) / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
+  const milliseconds = ms % 1000;
+
+  const hh = String(hours).padStart(2, '0');
+  const mm = String(minutes).padStart(2, '0');
+  const ss = String(seconds).padStart(2, '0');
+  const m = String(milliseconds).padStart(3, '0');
+
+  return `${hh}::${mm}::${ss}.${m}`;
+}
+
 // Coordinator class for managing concurrent workers
 class ScanCoordinator {
   constructor(baseDomain, startUrl, initialUrls, maxWorkers = 3, maxScanLimit = 50) {
@@ -130,7 +145,8 @@ class ScanCoordinator {
     readline.cursorTo(process.stdout, 0, 0);
     readline.clearScreenDown(process.stdout);
 
-    const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
+    const elapsedMs = Date.now() - this.startTime;
+    const elapsedStr = formatDuration(elapsedMs);
     const completedCount = this.pagesResult.size;
     const totalCount = completedCount + this.scanQueue.length;
     const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
@@ -145,7 +161,7 @@ class ScanCoordinator {
     console.log(`\x1b[1m\x1b[35m====================================================\x1b[0m`);
     console.log(`\x1b[36mTarget Domain:\x1b[0m     ${this.baseDomain}`);
     console.log(`\x1b[36mWorkers:\x1b[0m           ${this.maxWorkers} active threads`);
-    console.log(`\x1b[36mElapsed Time:\x1b[0m      ${elapsed}s`);
+    console.log(`\x1b[36mElapsed Time:\x1b[0m      ${elapsedStr}`);
     const limitStr = this.maxScanLimit === Infinity ? 'unlimited' : this.maxScanLimit;
     console.log(`\x1b[36mProgress:\x1b[0m          [${bar}] ${progressPercent}% (${completedCount}/${totalCount} scanned, limit: ${limitStr})`);
     
@@ -186,6 +202,7 @@ class ScanCoordinator {
       for (let i = 0; i < this.maxWorkers; i++) {
         const worker = new Worker(path.join(__dirname, 'worker.js'));
         worker.index = i;
+        worker.isIdle = true;
         this.workers.push(worker);
         
         worker.on('message', (result) => {
@@ -195,6 +212,7 @@ class ScanCoordinator {
         worker.on('error', (err) => {
           this.workerStatus[worker.index] = `Error: ${err.message}`;
           this.activeWorkersCount--;
+          worker.isIdle = true;
           this.processNext(worker);
         });
 
@@ -239,9 +257,11 @@ class ScanCoordinator {
   processNext(worker) {
     if (this.scanQueue.length === 0) {
       this.workerStatus[worker.index] = 'Idle';
+      worker.isIdle = true;
       return; // No work available right now
     }
 
+    worker.isIdle = false;
     const currentUrl = this.scanQueue.shift();
     this.activeWorkersCount++;
     this.workerStatus[worker.index] = `Scanning ${currentUrl}`;
@@ -254,6 +274,8 @@ class ScanCoordinator {
 
   handleWorkerResult(worker, result) {
     this.activeWorkersCount--;
+    worker.isIdle = true;
+    this.workerStatus[worker.index] = 'Idle';
     const pageUrl = result.url;
     
     // Save page status
@@ -284,19 +306,32 @@ class ScanCoordinator {
       });
 
       // Process newly discovered URLs from page links
+      let addedNew = false;
       if (this.queuedSet.size < this.maxScanLimit) {
         result.discoveredUrls.forEach(url => {
           const norm = normalizeUrl(url);
           if (!this.queuedSet.has(norm) && this.queuedSet.size < this.maxScanLimit) {
             this.queuedSet.add(norm);
             this.scanQueue.push(norm);
+            addedNew = true;
+          }
+        });
+      }
+
+      // If we added new links, wake up other idle workers
+      if (addedNew) {
+        this.workers.forEach(w => {
+          if (w.isIdle) {
+            this.processNext(w);
           }
         });
       }
     }
 
-    // Assign next task
-    this.processNext(worker);
+    // Assign next task to this worker if it's still idle
+    if (worker.isIdle) {
+      this.processNext(worker);
+    }
   }
 
   terminateWorkers() {
