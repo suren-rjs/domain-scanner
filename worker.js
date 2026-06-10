@@ -53,6 +53,26 @@ function isBlogOrArticle(urlObj) {
   return false;
 }
 
+/**
+ * Checks if a given URL is likely a static asset (image, document, media, archive).
+ * 
+ * @param {URL} urlObj - The standard parsed URL object.
+ * @returns {boolean} True if the URL points to a static asset.
+ */
+function isStaticAsset(urlObj) {
+  const pathname = urlObj.pathname.toLowerCase();
+  const assetExtensions = [
+    '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp', '.ico',
+    '.pdf', '.css', '.js', '.json', '.xml',
+    '.mp4', '.mkv', '.avi', '.webm', '.mov',
+    '.mp3', '.wav', '.ogg',
+    '.zip', '.tar', '.gz', '.rar', '.7z',
+    '.exe', '.dmg', '.pkg',
+    '.woff', '.woff2', '.ttf', '.eot'
+  ];
+  return assetExtensions.some(ext => pathname.endsWith(ext));
+}
+
 parentPort.on('message', async (task) => {
   const { url, baseDomain } = task;
   const result = {
@@ -93,6 +113,11 @@ parentPort.on('message', async (task) => {
           
           // We only care about http/https protocols
           if (resolvedUrl.protocol !== 'http:' && resolvedUrl.protocol !== 'https:') {
+            continue;
+          }
+
+          // Skip static assets
+          if (isStaticAsset(resolvedUrl)) {
             continue;
           }
 

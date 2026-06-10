@@ -213,6 +213,22 @@ class ScanCoordinator {
           readline.clearScreenDown(process.stdout);
           this.render();
           console.log(`\n\x1b[32mScan phase finished successfully!\x1b[0m\n`);
+          
+          // Print failures summary if any
+          const failures = [];
+          for (const res of this.pagesResult.values()) {
+            if (!res.success) {
+              failures.push(res);
+            }
+          }
+          if (failures.length > 0) {
+            console.log(`\x1b[1m\x1b[31m--- FAILED PAGES REPORT ---\x1b[0m`);
+            failures.forEach(f => {
+              console.log(`\x1b[31m✘ ${f.url} - ${f.error || 'Unknown Error'}\x1b[0m`);
+            });
+            console.log();
+          }
+          
           resolve();
         }
       }, 250);
