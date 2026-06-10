@@ -138,6 +138,57 @@ class ScanCoordinator {
     // Dashboard status tracking
     this.workerStatus = Array(maxWorkers).fill('Idle');
     this.startTime = Date.now();
+
+    // Cache file path
+    this.cacheFilePath = path.join(process.cwd(), `${baseDomain}_visited.json`);
+    
+    // Load previously scanned results from cache
+    if (fs.existsSync(this.cacheFilePath)) {
+      try {
+        const raw = fs.readFileSync(this.cacheFilePath, 'utf8');
+        const cached = JSON.parse(raw);
+        cached.forEach(page => {
+          this.pagesResult.set(page.url, page);
+          this.queuedSet.add(normalizeUrl(page.url));
+
+          // Re-populate technologies accumulator
+          if (page.success && page.technologies) {
+            page.technologies.forEach(tech => {
+              if (!this.technologies.has(tech.name)) {
+                this.technologies.set(tech.name, {
+                  category: tech.category,
+                  pages: new Set()
+                });
+              }
+              this.technologies.get(tech.name).pages.add(page.url);
+            });
+          }
+
+          // Re-populate blogArticles accumulator
+          if (page.success && page.blogArticles) {
+            page.blogArticles.forEach(url => {
+              if (!this.blogArticles.has(url)) {
+                this.blogArticles.set(url, page.url);
+              }
+            });
+          }
+        });
+        
+        // Remove already scanned URLs from initial scan queue to avoid re-scanning
+        this.scanQueue = this.scanQueue.filter(url => !this.pagesResult.has(url));
+      } catch (err) {
+        // Silent recovery on corrupt cache files
+      }
+    }
+  }
+
+  saveCache() {
+    try {
+      const data = Array.from(this.pagesResult.values());
+      fs.writeFileSync(this.cacheFilePath, JSON.stringify(data, null, 2), 'utf8');
+    } catch (err) {
+      // Ignore write errors
+    }
   }
 
   render() {
@@ -283,8 +334,13 @@ class ScanCoordinator {
       url: pageUrl,
       success: result.success,
       status: result.status,
-      error: result.error
+      error: result.error,
+      technologies: result.success ? result.technologies : [],
+      blogArticles: result.success ? result.blogArticles : []
     });
+
+    // Save progress to JSON cache
+    this.saveCache();
 
     if (result.success) {
       // Accumulate Blog & Article URLs
