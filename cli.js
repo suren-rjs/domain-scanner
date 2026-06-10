@@ -19,6 +19,24 @@ function getBaseDomain(input) {
   return cleaned.toLowerCase();
 }
 
+// Helper to extract hostname from input
+function getHost(input) {
+  let cleaned = input.trim();
+  if (!/^https?:\/\//i.test(cleaned)) {
+    cleaned = 'http://' + cleaned;
+  }
+  try {
+    const urlObj = new URL(cleaned);
+    return urlObj.hostname.toLowerCase();
+  } catch (err) {
+    cleaned = cleaned.replace(/^(https?:\/\/)?/, '');
+    cleaned = cleaned.split('/')[0];
+    cleaned = cleaned.split(':')[0];
+    return cleaned.toLowerCase();
+  }
+}
+
+
 // Subdomain discovery via crt.sh
 async function discoverSubdomains(domain) {
   console.log(`\x1b[36m[DNS] Querying crt.sh certificate transparency logs for subdomains...\x1b[0m`);
@@ -144,10 +162,13 @@ class ScanCoordinator {
 
       // Accumulate Technologies
       result.technologies.forEach(tech => {
-        if (!this.technologies.has(tech)) {
-          this.technologies.set(tech, new Set());
+        if (!this.technologies.has(tech.name)) {
+          this.technologies.set(tech.name, {
+            category: tech.category,
+            pages: new Set()
+          });
         }
-        this.technologies.get(tech).add(domainName);
+        this.technologies.get(tech.name).pages.add(domainName);
       });
 
       // Process newly discovered subdomains from page links
@@ -186,10 +207,11 @@ class ScanCoordinator {
     const uniqueBlogs = Array.from(uniqueBlogsMap.entries()).map(([url, source]) => ({ url, source }));
 
     // 3. Technologies compiled
-    const compiledTech = Array.from(this.technologies.entries()).map(([techName, pagesSet]) => {
+    const compiledTech = Array.from(this.technologies.entries()).map(([techName, data]) => {
       return {
         name: techName,
-        pages: Array.from(pagesSet)
+        category: data.category,
+        pages: Array.from(data.pages)
       };
     }).sort((a, b) => b.pages.length - a.pages.length);
 
@@ -224,11 +246,17 @@ async function main() {
     process.exit(1);
   }
 
+  const targetHost = getHost(targetInput);
   const baseDomain = getBaseDomain(targetInput);
   console.log(`\x1b[32mTarget base domain resolved to: ${baseDomain}\x1b[0m`);
 
   // Step 1: Subdomain Discovery
   const discoveredSubs = await discoverSubdomains(baseDomain);
+
+  // Ensure target host itself is scanned
+  if (targetHost && targetHost !== baseDomain && !discoveredSubs.includes(targetHost)) {
+    discoveredSubs.push(targetHost);
+  }
 
   // Step 2: Main Scan Phase
   const coordinator = new ScanCoordinator(baseDomain, discoveredSubs, 3);

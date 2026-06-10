@@ -197,7 +197,7 @@ async function generateExcelReport(domain, subdomainsData, blogArticlesData, tec
   wsTech.views = [{ showGridLines: true }];
 
   // Title block
-  wsTech.mergeCells('A1:C1');
+  wsTech.mergeCells('A1:D1');
   const titleRow3 = wsTech.getCell('A1');
   titleRow3.value = `Technologies Detected on Domain`;
   titleRow3.font = titleFont;
@@ -208,7 +208,7 @@ async function generateExcelReport(domain, subdomainsData, blogArticlesData, tec
   wsTech.getRow(2).height = 20;
 
   // Table Headers
-  const headersTab3 = ['Technology Name', 'Detected On Page(s)', 'Occurrences'];
+  const headersTab3 = ['Category', 'Technology Name', 'Detected On Page(s)', 'Occurrences'];
   wsTech.getRow(4).values = headersTab3;
   wsTech.getRow(4).height = 25;
 
@@ -220,7 +220,7 @@ async function generateExcelReport(domain, subdomainsData, blogArticlesData, tec
       fgColor: { argb: colors.primary }
     };
     cell.font = headerFont;
-    cell.alignment = { vertical: 'middle', horizontal: colIndex === 2 ? 'center' : 'left' };
+    cell.alignment = { vertical: 'middle', horizontal: colIndex === 3 ? 'center' : 'left' };
   });
 
   // Populate Technologies Data
@@ -228,17 +228,18 @@ async function generateExcelReport(domain, subdomainsData, blogArticlesData, tec
     const rowIndex = idx + 5;
     const row = wsTech.getRow(rowIndex);
     row.values = [
+      tech.category || 'Other',
       tech.name,
       tech.pages.join(', '),
       tech.pages.length
     ];
     row.height = 20;
 
-    for (let c = 1; c <= 3; c++) {
+    for (let c = 1; c <= 4; c++) {
       const cell = wsTech.getCell(rowIndex, c);
       cell.font = cellFont;
       cell.border = thinBorder;
-      cell.alignment = { vertical: 'middle', horizontal: c === 3 ? 'center' : 'left' };
+      cell.alignment = { vertical: 'middle', horizontal: c === 4 ? 'center' : 'left' };
       if (c === 1) {
         cell.font = boldCellFont;
       }
