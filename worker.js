@@ -59,7 +59,7 @@ parentPort.on('message', async (task) => {
     url,
     success: false,
     status: null,
-    subdomains: [],
+    discoveredUrls: [],
     blogArticles: [],
     technologies: [],
     error: null,
@@ -100,10 +100,8 @@ parentPort.on('message', async (task) => {
 
           // Check if it belongs to the base domain
           if (hostname === baseDomain || hostname.endsWith('.' + baseDomain)) {
-            // Found a subdomain or internal URL
-            if (hostname !== baseDomain) {
-              result.subdomains.push(hostname);
-            }
+            // Found an internal URL
+            result.discoveredUrls.push(resolvedUrl.toString());
 
             // Check if it looks like a blog or article
             if (isBlogOrArticle(resolvedUrl)) {

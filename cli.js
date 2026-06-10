@@ -66,35 +66,125 @@ async function discoverSubdomains(domain) {
   return Array.from(subdomains);
 }
 
+// Helper to normalize URLs to avoid duplicate crawling & index pages
+function normalizeUrl(urlStr) {
+  try {
+    const urlObj = new URL(urlStr);
+    urlObj.hash = '';
+    urlObj.search = ''; // Strip search query to avoid infinite parameter loops
+    
+    let pathname = urlObj.pathname.toLowerCase();
+    // Strip index files
+    if (pathname.endsWith('/index.html') || pathname.endsWith('/index.htm') || pathname.endsWith('/index.php') || pathname.endsWith('/index')) {
+      pathname = pathname.replace(/\/index(\.html|\.htm|\.php)?$/, '');
+    }
+    // Strip trailing slash if it's not just '/'
+    if (pathname.length > 1 && pathname.endsWith('/')) {
+      pathname = pathname.slice(0, -1);
+    }
+    urlObj.pathname = pathname;
+    return urlObj.toString();
+  } catch (e) {
+    return urlStr.toLowerCase().trim();
+  }
+}
+
 // Coordinator class for managing concurrent workers
 class ScanCoordinator {
-  constructor(baseDomain, initialSubdomains, maxWorkers = 3) {
+  constructor(baseDomain, startUrl, initialUrls, maxWorkers = 3) {
     this.baseDomain = baseDomain;
     this.maxWorkers = maxWorkers;
     
-    // Track unique subdomains and their scan results
-    this.subdomainsResult = new Map(); // subdomain -> { subdomain, success, status, error }
+    // Track unique pages/subdomains and their scan results
+    this.pagesResult = new Map(); // url -> { url, success, status, error }
     
-    // Queue of subdomains to scan
-    this.scanQueue = [baseDomain, ...initialSubdomains];
+    // Normalize and build initial scan queue
+    const uniqueUrls = new Set();
+    uniqueUrls.add(normalizeUrl(startUrl));
+    
+    // Also add the plain base domain URL
+    uniqueUrls.add(normalizeUrl(`https://${baseDomain}`));
+
+    initialUrls.forEach(url => {
+      uniqueUrls.add(normalizeUrl(url));
+    });
+
+    this.scanQueue = Array.from(uniqueUrls);
     this.queuedSet = new Set(this.scanQueue);
     
     // Results accumulator
-    this.blogArticles = []; // Array of { url, source }
+    this.blogArticles = new Map(); // Map of url -> source
     this.technologies = new Map(); // techName -> Set of pages where it was detected
     
     this.activeWorkersCount = 0;
     this.workers = [];
-    this.maxScanLimit = 50; // Safety limit to avoid infinite subdomain crawling
+    this.maxScanLimit = 50; // Safety limit to avoid infinite crawling
+    
+    // Dashboard status tracking
+    this.workerStatus = Array(maxWorkers).fill('Idle');
+    this.startTime = Date.now();
+  }
+
+  render() {
+    // Reposition cursor to top left & clear down to avoid flashing/scrolling
+    readline.cursorTo(process.stdout, 0, 0);
+    readline.clearScreenDown(process.stdout);
+
+    const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
+    const completedCount = this.pagesResult.size;
+    const totalCount = completedCount + this.scanQueue.length;
+    const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+    
+    // Draw progress bar
+    const barLength = 20;
+    const filledLength = Math.round(barLength * (completedCount / totalCount || 0));
+    const bar = '█'.repeat(filledLength) + '░'.repeat(barLength - filledLength);
+
+    console.log(`\x1b[1m\x1b[35m====================================================\x1b[0m`);
+    console.log(`\x1b[1m\x1b[35m              DOMAIN SCANNER DASHBOARD              \x1b[0m`);
+    console.log(`\x1b[1m\x1b[35m====================================================\x1b[0m`);
+    console.log(`\x1b[36mTarget Domain:\x1b[0m     ${this.baseDomain}`);
+    console.log(`\x1b[36mWorkers:\x1b[0m           ${this.maxWorkers} active threads`);
+    console.log(`\x1b[36mElapsed Time:\x1b[0m      ${elapsed}s`);
+    console.log(`\x1b[36mProgress:\x1b[0m          [${bar}] ${progressPercent}% (${completedCount}/${totalCount} scanned, limit: ${this.maxScanLimit})`);
+    
+    // Success / Failure stats
+    let successCount = 0;
+    let failedCount = 0;
+    for (const res of this.pagesResult.values()) {
+      if (res.success) successCount++;
+      else failedCount++;
+    }
+
+    console.log(`\n\x1b[1m\x1b[33m--- STATISTICS ---\x1b[0m`);
+    console.log(`\x1b[32m✔ Active/Success Pages:\x1b[0m   ${successCount}`);
+    console.log(`\x1b[31m✘ Failed/Error Pages:\x1b[0m     ${failedCount}`);
+    console.log(`\x1b[34mℹ Unique Techs Found:\x1b[0m     ${this.technologies.size}`);
+    console.log(`\x1b[34mℹ Blog Articles Found:\x1b[0m    ${this.blogArticles.size}`);
+
+    console.log(`\n\x1b[1m\x1b[33m--- ACTIVE WORKERS STATUS ---\x1b[0m`);
+    this.workerStatus.forEach((status, i) => {
+      console.log(` \x1b[36mWorker #${i + 1}:\x1b[0m ${status}`);
+    });
+
+    console.log(`\n\x1b[90mPress Ctrl+C to abort the scan.\x1b[0m`);
   }
 
   async run() {
-    console.log(`\x1b[36m[Scan] Initializing scan for ${this.baseDomain} using ${this.maxWorkers} worker threads...\x1b[0m`);
+    this.startTime = Date.now();
+    // Clear terminal screen completely before starting dashboard
+    process.stdout.write('\x1b[2J\x1b[0;0H');
+
+    // Run render periodically
+    this.renderInterval = setInterval(() => {
+      this.render();
+    }, 250);
     
     return new Promise((resolve) => {
       // Create worker threads
       for (let i = 0; i < this.maxWorkers; i++) {
         const worker = new Worker(path.join(__dirname, 'worker.js'));
+        worker.index = i;
         this.workers.push(worker);
         
         worker.on('message', (result) => {
@@ -102,7 +192,7 @@ class ScanCoordinator {
         });
 
         worker.on('error', (err) => {
-          console.error(`\x1b[31m[Worker Error] Worker ${i} encountered an error: ${err.message}\x1b[0m`);
+          this.workerStatus[worker.index] = `Error: ${err.message}`;
           this.activeWorkersCount--;
           this.processNext(worker);
         });
@@ -115,49 +205,54 @@ class ScanCoordinator {
       this.checkCompletionInterval = setInterval(() => {
         if (this.scanQueue.length === 0 && this.activeWorkersCount === 0) {
           clearInterval(this.checkCompletionInterval);
+          clearInterval(this.renderInterval);
           this.terminateWorkers();
+          
+          // Clear final render and draw one last time
+          readline.cursorTo(process.stdout, 0, 0);
+          readline.clearScreenDown(process.stdout);
+          this.render();
+          console.log(`\n\x1b[32mScan phase finished successfully!\x1b[0m\n`);
           resolve();
         }
-      }, 500);
+      }, 250);
     });
   }
 
   processNext(worker) {
     if (this.scanQueue.length === 0) {
+      this.workerStatus[worker.index] = 'Idle';
       return; // No work available right now
     }
 
-    const currentSub = this.scanQueue.shift();
+    const currentUrl = this.scanQueue.shift();
     this.activeWorkersCount++;
-
-    // Format target URL
-    const url = `https://${currentSub}`;
-    console.log(`\x1b[90m[Worker] Scanning: ${url} (Queue left: ${this.scanQueue.length})\x1b[0m`);
+    this.workerStatus[worker.index] = `Scanning ${currentUrl}`;
 
     worker.postMessage({
-      url,
+      url: currentUrl,
       baseDomain: this.baseDomain
     });
   }
 
   handleWorkerResult(worker, result) {
     this.activeWorkersCount--;
-    const domainName = new URL(result.url).hostname;
+    const pageUrl = result.url;
     
-    // Save subdomain status
-    this.subdomainsResult.set(domainName, {
-      subdomain: domainName,
+    // Save page status
+    this.pagesResult.set(pageUrl, {
+      url: pageUrl,
       success: result.success,
       status: result.status,
       error: result.error
     });
 
     if (result.success) {
-      console.log(`\x1b[32m[Success] ${domainName} (Status: ${result.status})\x1b[0m`);
-      
       // Accumulate Blog & Article URLs
       result.blogArticles.forEach(url => {
-        this.blogArticles.push({ url, source: domainName });
+        if (!this.blogArticles.has(url)) {
+          this.blogArticles.set(url, pageUrl);
+        }
       });
 
       // Accumulate Technologies
@@ -168,21 +263,19 @@ class ScanCoordinator {
             pages: new Set()
           });
         }
-        this.technologies.get(tech.name).pages.add(domainName);
+        this.technologies.get(tech.name).pages.add(pageUrl);
       });
 
-      // Process newly discovered subdomains from page links
+      // Process newly discovered URLs from page links
       if (this.queuedSet.size < this.maxScanLimit) {
-        result.subdomains.forEach(sub => {
-          if (!this.queuedSet.has(sub) && this.queuedSet.size < this.maxScanLimit) {
-            this.queuedSet.add(sub);
-            this.scanQueue.push(sub);
-            console.log(`\x1b[36m[Discovered] Found new subdomain: ${sub}\x1b[0m`);
+        result.discoveredUrls.forEach(url => {
+          const norm = normalizeUrl(url);
+          if (!this.queuedSet.has(norm) && this.queuedSet.size < this.maxScanLimit) {
+            this.queuedSet.add(norm);
+            this.scanQueue.push(norm);
           }
         });
       }
-    } else {
-      console.log(`\x1b[31m[Failed] ${domainName} - ${result.error}\x1b[0m`);
     }
 
     // Assign next task
@@ -194,17 +287,11 @@ class ScanCoordinator {
   }
 
   getCompiledData() {
-    // 1. Subdomains list (Without duplicates, sorted)
-    const sortedSubdomains = Array.from(this.subdomainsResult.values()).sort((a, b) => a.subdomain.localeCompare(b.subdomain));
+    // 1. Pages list (Without duplicates, sorted)
+    const sortedPages = Array.from(this.pagesResult.values()).sort((a, b) => a.url.localeCompare(b.url));
 
     // 2. Blog and Article URLs (Without duplicate URLs)
-    const uniqueBlogsMap = new Map();
-    this.blogArticles.forEach(item => {
-      if (!uniqueBlogsMap.has(item.url)) {
-        uniqueBlogsMap.set(item.url, item.source);
-      }
-    });
-    const uniqueBlogs = Array.from(uniqueBlogsMap.entries()).map(([url, source]) => ({ url, source }));
+    const uniqueBlogs = Array.from(this.blogArticles.entries()).map(([url, source]) => ({ url, source }));
 
     // 3. Technologies compiled
     const compiledTech = Array.from(this.technologies.entries()).map(([techName, data]) => {
@@ -216,7 +303,7 @@ class ScanCoordinator {
     }).sort((a, b) => b.pages.length - a.pages.length);
 
     return {
-      subdomains: sortedSubdomains,
+      pages: sortedPages,
       blogArticles: uniqueBlogs,
       technologies: compiledTech
     };
@@ -253,13 +340,25 @@ async function main() {
   // Step 1: Subdomain Discovery
   const discoveredSubs = await discoverSubdomains(baseDomain);
 
+  // Convert discovered subdomains to full URLs
+  const initialUrls = discoveredSubs.map(sub => `https://${sub}`);
+
+  // Format the startUrl correctly
+  let startUrl = targetInput.trim();
+  if (!/^https?:\/\//i.test(startUrl)) {
+    startUrl = 'https://' + startUrl;
+  }
+
   // Ensure target host itself is scanned
-  if (targetHost && targetHost !== baseDomain && !discoveredSubs.includes(targetHost)) {
-    discoveredSubs.push(targetHost);
+  if (targetHost && targetHost !== baseDomain) {
+    const targetHostUrl = `https://${targetHost}`;
+    if (!initialUrls.includes(targetHostUrl)) {
+      initialUrls.push(targetHostUrl);
+    }
   }
 
   // Step 2: Main Scan Phase
-  const coordinator = new ScanCoordinator(baseDomain, discoveredSubs, 3);
+  const coordinator = new ScanCoordinator(baseDomain, startUrl, initialUrls, 3);
   await coordinator.run();
 
   // Step 3: Compiling Report
@@ -272,7 +371,7 @@ async function main() {
   try {
     await generateExcelReport(
       baseDomain,
-      data.subdomains,
+      data.pages,
       data.blogArticles,
       data.technologies,
       outputPath

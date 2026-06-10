@@ -44,24 +44,24 @@ async function generateExcelReport(domain, subdomainsData, blogArticlesData, tec
   const boldCellFont = { name: 'Segoe UI', size: 10, bold: true };
 
   // ==========================================
-  // TAB 1: Subdomains
+  // TAB 1: Pages & Subdomains
   // ==========================================
-  const wsSubdomains = workbook.addWorksheet('Subdomains');
+  const wsSubdomains = workbook.addWorksheet('Pages & Subdomains');
   wsSubdomains.views = [{ showGridLines: true }];
 
   // Title block
   wsSubdomains.mergeCells('A1:D1');
   const titleRow1 = wsSubdomains.getCell('A1');
-  titleRow1.value = `Subdomain Scan Results for ${domain}`;
+  titleRow1.value = `Page & Subdomain Scan Results for ${domain}`;
   titleRow1.font = titleFont;
   wsSubdomains.getRow(1).height = 30;
 
-  wsSubdomains.getCell('A2').value = `Total Subdomains Found: ${subdomainsData.length}`;
+  wsSubdomains.getCell('A2').value = `Total Pages Scanned: ${subdomainsData.length}`;
   wsSubdomains.getCell('A2').font = boldCellFont;
   wsSubdomains.getRow(2).height = 20;
 
   // Table Headers
-  const headersTab1 = ['Subdomain', 'Status', 'Response Code', 'Scan Error / Note'];
+  const headersTab1 = ['URL / Page', 'Status', 'Response Code', 'Scan Error / Note'];
   wsSubdomains.getRow(4).values = headersTab1;
   wsSubdomains.getRow(4).height = 25;
 
@@ -76,15 +76,15 @@ async function generateExcelReport(domain, subdomainsData, blogArticlesData, tec
     cell.alignment = { vertical: 'middle', horizontal: colIndex === 0 ? 'left' : 'center' };
   });
 
-  // Populate Subdomains Data
-  subdomainsData.forEach((sub, idx) => {
+  // Populate Pages Data
+  subdomainsData.forEach((page, idx) => {
     const rowIndex = idx + 5;
     const row = wsSubdomains.getRow(rowIndex);
     row.values = [
-      sub.subdomain,
-      sub.success ? 'Active' : 'Inactive / Timeout',
-      sub.status || '-',
-      sub.error || '-'
+      page.url,
+      page.success ? 'Active' : 'Inactive / Timeout',
+      page.status || '-',
+      page.error || '-'
     ];
     row.height = 20;
 
@@ -103,9 +103,9 @@ async function generateExcelReport(domain, subdomainsData, blogArticlesData, tec
         cell.fill = {
           type: 'pattern',
           pattern: 'solid',
-          fgColor: { argb: sub.success ? 'D1FAE5' : 'FEE2E2' } // soft green or soft red
+          fgColor: { argb: page.success ? 'D1FAE5' : 'FEE2E2' } // soft green or soft red
         };
-        cell.font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: sub.success ? '065F46' : '991B1B' } };
+        cell.font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: page.success ? '065F46' : '991B1B' } };
       } else {
         cell.alignment = { vertical: 'middle', horizontal: 'center' };
       }
