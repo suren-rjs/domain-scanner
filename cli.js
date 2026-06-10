@@ -91,7 +91,7 @@ function normalizeUrl(urlStr) {
 
 // Coordinator class for managing concurrent workers
 class ScanCoordinator {
-  constructor(baseDomain, startUrl, initialUrls, maxWorkers = 3) {
+  constructor(baseDomain, startUrl, initialUrls, maxWorkers = 3, maxScanLimit = 50) {
     this.baseDomain = baseDomain;
     this.maxWorkers = maxWorkers;
     
@@ -118,7 +118,7 @@ class ScanCoordinator {
     
     this.activeWorkersCount = 0;
     this.workers = [];
-    this.maxScanLimit = 50; // Safety limit to avoid infinite crawling
+    this.maxScanLimit = maxScanLimit; // Configurable scan limit
     
     // Dashboard status tracking
     this.workerStatus = Array(maxWorkers).fill('Idle');
@@ -146,7 +146,8 @@ class ScanCoordinator {
     console.log(`\x1b[36mTarget Domain:\x1b[0m     ${this.baseDomain}`);
     console.log(`\x1b[36mWorkers:\x1b[0m           ${this.maxWorkers} active threads`);
     console.log(`\x1b[36mElapsed Time:\x1b[0m      ${elapsed}s`);
-    console.log(`\x1b[36mProgress:\x1b[0m          [${bar}] ${progressPercent}% (${completedCount}/${totalCount} scanned, limit: ${this.maxScanLimit})`);
+    const limitStr = this.maxScanLimit === Infinity ? 'unlimited' : this.maxScanLimit;
+    console.log(`\x1b[36mProgress:\x1b[0m          [${bar}] ${progressPercent}% (${completedCount}/${totalCount} scanned, limit: ${limitStr})`);
     
     // Success / Failure stats
     let successCount = 0;
@@ -326,8 +327,36 @@ class ScanCoordinator {
   }
 }
 
+// Helper to print tool usage/help instructions
+function showHelp() {
+  console.log(`
+\x1b[1m\x1b[35mDomain Scanner CLI\x1b[0m
+A high-performance asynchronous crawler to scan domains, map pages, identify blog articles, detect technologies, and generate styled Excel reports.
+
+\x1b[1mUsage:\x1b[0m
+  domain-scanner <url> [scan_limit] [worker_threads]
+  npm start -- <url> [scan_limit] [worker_threads]
+
+\x1b[1mOptions:\x1b[0m
+  -h, --help        Show this help section.
+  scan_limit        Maximum unique pages/subpages to scan. Set to 'all', '0', or '-1' for unlimited scanning (default: 50).
+  worker_threads    Number of concurrent crawler threads (default: 3).
+
+\x1b[1mExamples:\x1b[0m
+  domain-scanner https://www.williamslea.com/
+  domain-scanner nodejs.org 200 5
+  domain-scanner mayerbrown.com all 8
+  `);
+  process.exit(0);
+}
+
 // CLI Prompt Runner
 async function main() {
+  // Check for help flags
+  if (process.argv.includes('-h') || process.argv.includes('--help')) {
+    showHelp();
+  }
+
   let targetInput = process.argv[2];
 
   if (!targetInput) {
@@ -337,11 +366,15 @@ async function main() {
     });
 
     targetInput = await new Promise(resolve => {
-      rl.question('\x1b[35mEnter domain address to scan (e.g. example.com): \x1b[0m', answer => {
+      rl.question('\x1b[35mEnter domain address to scan (e.g. example.com) or -h for help: \x1b[0m', answer => {
         rl.close();
         resolve(answer);
       });
     });
+
+    if (targetInput.trim() === '-h' || targetInput.trim() === '--help') {
+      showHelp();
+    }
   }
 
   if (!targetInput) {
@@ -373,8 +406,27 @@ async function main() {
     }
   }
 
+  // Parse limit and workers CLI arguments
+  let limitInput = process.argv[3];
+  let workersInput = process.argv[4];
+
+  let maxLimit = 50;
+  if (limitInput) {
+    const lim = limitInput.toLowerCase();
+    if (lim === 'all' || lim === '0' || lim === '-1') {
+      maxLimit = Infinity;
+    } else if (!isNaN(lim)) {
+      maxLimit = parseInt(lim, 10);
+    }
+  }
+
+  let maxWorkers = 3;
+  if (workersInput && !isNaN(workersInput)) {
+    maxWorkers = parseInt(workersInput, 10);
+  }
+
   // Step 2: Main Scan Phase
-  const coordinator = new ScanCoordinator(baseDomain, startUrl, initialUrls, 3);
+  const coordinator = new ScanCoordinator(baseDomain, startUrl, initialUrls, maxWorkers, maxLimit);
   await coordinator.run();
 
   // Step 3: Compiling Report

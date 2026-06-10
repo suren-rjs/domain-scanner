@@ -43,19 +43,38 @@ npm install -g domain-scanner
 
 ## Usage
 
-### If Installed Globally:
-Run the command directly from any directory:
+### Direct Command Arguments:
 ```bash
-domain-scanner nodejs.org
+# General Usage
+domain-scanner <url> [scan_limit] [worker_threads]
+
+# Help section
+domain-scanner -h
 ```
 
-### If Set up Locally:
-```bash
-# Prompt input format:
-npm start
+### Options:
+- **`scan_limit`**: The maximum number of unique pages/subpages to scan. Defaults to `50` to prevent infinite crawl loops on huge websites. Set to `all`, `0`, or `-1` to perform an **unlimited** page scan.
+- **`worker_threads`**: Number of concurrent crawler worker threads to use. Defaults to `3`.
 
-# Direct argument format:
-npm start nodejs.org
+### Examples:
+```bash
+# Basic scan (50 page limit, 3 threads)
+domain-scanner nodejs.org
+
+# Scan up to 200 pages with 5 parallel threads
+domain-scanner nodejs.org 200 5
+
+# Scan ALL pages (unlimited) with 8 parallel threads
+domain-scanner mayerbrown.com all 8
+```
+
+### If Running Locally:
+```bash
+# Show help
+npm start -- -h
+
+# Perform scan
+npm start -- nodejs.org 200 5
 ```
 
 Once the scan completes, a report named `<domain>_scan_report.xlsx` will be generated in your current working directory.
