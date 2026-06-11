@@ -5,6 +5,7 @@ const path = require('path');
 const readline = require('readline');
 const axios = require('axios');
 const fs = require('fs');
+const { DatabaseSync } = require('node:sqlite');
 const { generateExcelReport } = require('./excel-generator');
 
 // Helper to sanitize and extract base domain
@@ -109,86 +110,103 @@ class ScanCoordinator {
   constructor(baseDomain, startUrl, initialUrls, maxWorkers = 3, maxScanLimit = 50) {
     this.baseDomain = baseDomain;
     this.maxWorkers = maxWorkers;
+    this.maxScanLimit = maxScanLimit;
     
-    // Track unique pages/subdomains and their scan results
-    this.pagesResult = new Map(); // url -> { url, success, status, error }
+    this.dbPath = path.join(process.cwd(), `${baseDomain}_visited.db`);
+    this.db = new DatabaseSync(this.dbPath);
     
-    // Normalize and build initial scan queue
-    const uniqueUrls = new Set();
-    uniqueUrls.add(normalizeUrl(startUrl));
+    // Create high-performance schema with indices
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS pages (
+        url TEXT PRIMARY KEY,
+        success INTEGER,
+        status INTEGER,
+        error TEXT,
+        technologies TEXT,
+        blogArticles TEXT
+      );
+      
+      CREATE TABLE IF NOT EXISTS blog_articles (
+        url TEXT PRIMARY KEY,
+        source TEXT
+      );
+      
+      CREATE TABLE IF NOT EXISTS technologies (
+        name TEXT,
+        category TEXT,
+        page TEXT,
+        PRIMARY KEY (name, page)
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_tech_name ON technologies(name);
+    `);
     
-    // Also add the plain base domain URL
-    uniqueUrls.add(normalizeUrl(`https://${baseDomain}`));
-
-    initialUrls.forEach(url => {
-      uniqueUrls.add(normalizeUrl(url));
+    // Prepared statements for maximum query throughput
+    this.insertPageStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO pages (url, success, status, error, technologies, blogArticles)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    
+    this.insertBlogStmt = this.db.prepare(`
+      INSERT OR IGNORE INTO blog_articles (url, source)
+      VALUES (?, ?)
+    `);
+    
+    this.insertTechStmt = this.db.prepare(`
+      INSERT OR IGNORE INTO technologies (name, category, page)
+      VALUES (?, ?, ?)
+    `);
+    
+    this.scanQueue = [];
+    this.queuedSet = new Set();
+    
+    // Rehydrate queuedSet from database history (fast $O(log N)$ indices)
+    const pagesQuery = this.db.prepare(`SELECT url FROM pages`);
+    const cachedPages = pagesQuery.all();
+    
+    cachedPages.forEach(row => {
+      this.queuedSet.add(normalizeUrl(row.url));
+    });
+    
+    // Load existing database records for blogArticles and technologies maps
+    this.blogArticles = new Map();
+    this.technologies = new Map();
+    
+    const blogQuery = this.db.prepare(`SELECT url, source FROM blog_articles`);
+    blogQuery.all().forEach(row => {
+      this.blogArticles.set(row.url, row.source);
+    });
+    
+    const techQuery = this.db.prepare(`SELECT name, category, page FROM technologies`);
+    techQuery.all().forEach(row => {
+      if (!this.technologies.has(row.name)) {
+        this.technologies.set(row.name, {
+          category: row.category,
+          pages: new Set()
+        });
+      }
+      this.technologies.get(row.name).pages.add(row.page);
     });
 
-    this.scanQueue = Array.from(uniqueUrls);
-    this.queuedSet = new Set(this.scanQueue);
+    // Build unique start URL queue
+    const uniqueUrls = new Set();
+    uniqueUrls.add(normalizeUrl(startUrl));
+    uniqueUrls.add(normalizeUrl(`https://${baseDomain}`));
+    initialUrls.forEach(url => uniqueUrls.add(normalizeUrl(url)));
     
-    // Results accumulator
-    this.blogArticles = new Map(); // Map of url -> source
-    this.technologies = new Map(); // techName -> Set of pages where it was detected
-    
+    uniqueUrls.forEach(url => {
+      if (!this.queuedSet.has(url)) {
+        this.scanQueue.push(url);
+        this.queuedSet.add(url);
+      }
+    });
+
     this.activeWorkersCount = 0;
     this.workers = [];
-    this.maxScanLimit = maxScanLimit; // Configurable scan limit
     
     // Dashboard status tracking
     this.workerStatus = Array(maxWorkers).fill('Idle');
     this.startTime = Date.now();
-
-    // Cache file path
-    this.cacheFilePath = path.join(process.cwd(), `${baseDomain}_visited.json`);
-    
-    // Load previously scanned results from cache
-    if (fs.existsSync(this.cacheFilePath)) {
-      try {
-        const raw = fs.readFileSync(this.cacheFilePath, 'utf8');
-        const cached = JSON.parse(raw);
-        cached.forEach(page => {
-          this.pagesResult.set(page.url, page);
-          this.queuedSet.add(normalizeUrl(page.url));
-
-          // Re-populate technologies accumulator
-          if (page.success && page.technologies) {
-            page.technologies.forEach(tech => {
-              if (!this.technologies.has(tech.name)) {
-                this.technologies.set(tech.name, {
-                  category: tech.category,
-                  pages: new Set()
-                });
-              }
-              this.technologies.get(tech.name).pages.add(page.url);
-            });
-          }
-
-          // Re-populate blogArticles accumulator
-          if (page.success && page.blogArticles) {
-            page.blogArticles.forEach(url => {
-              if (!this.blogArticles.has(url)) {
-                this.blogArticles.set(url, page.url);
-              }
-            });
-          }
-        });
-        
-        // Remove already scanned URLs from initial scan queue to avoid re-scanning
-        this.scanQueue = this.scanQueue.filter(url => !this.pagesResult.has(url));
-      } catch (err) {
-        // Silent recovery on corrupt cache files
-      }
-    }
-  }
-
-  saveCache() {
-    try {
-      const data = Array.from(this.pagesResult.values());
-      fs.writeFileSync(this.cacheFilePath, JSON.stringify(data, null, 2), 'utf8');
-    } catch (err) {
-      // Ignore write errors
-    }
   }
 
   render() {
@@ -198,7 +216,9 @@ class ScanCoordinator {
 
     const elapsedMs = Date.now() - this.startTime;
     const elapsedStr = formatDuration(elapsedMs);
-    const completedCount = this.pagesResult.size;
+    
+    const completedCountStmt = this.db.prepare(`SELECT COUNT(*) as count FROM pages`);
+    const completedCount = completedCountStmt.get().count || 0;
     const totalCount = completedCount + this.scanQueue.length;
     const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
     
@@ -216,19 +236,28 @@ class ScanCoordinator {
     const limitStr = this.maxScanLimit === Infinity ? 'unlimited' : this.maxScanLimit;
     console.log(`\x1b[36mProgress:\x1b[0m          [${bar}] ${progressPercent}% (${completedCount}/${totalCount} scanned, limit: ${limitStr})`);
     
-    // Success / Failure stats
-    let successCount = 0;
-    let failedCount = 0;
-    for (const res of this.pagesResult.values()) {
-      if (res.success) successCount++;
-      else failedCount++;
-    }
+    // Query aggregates from DB
+    const statsQuery = this.db.prepare(`
+      SELECT 
+        SUM(case when success = 1 then 1 else 0 end) as successCount,
+        SUM(case when success = 0 then 1 else 0 end) as failedCount
+      FROM pages
+    `);
+    const stats = statsQuery.get();
+    const successCount = stats.successCount || 0;
+    const failedCount = stats.failedCount || 0;
+
+    const techCountQuery = this.db.prepare(`SELECT COUNT(DISTINCT name) as count FROM technologies`);
+    const techCount = techCountQuery.get().count || 0;
+
+    const blogCountQuery = this.db.prepare(`SELECT COUNT(*) as count FROM blog_articles`);
+    const blogCount = blogCountQuery.get().count || 0;
 
     console.log(`\n\x1b[1m\x1b[33m--- STATISTICS ---\x1b[0m`);
     console.log(`\x1b[32m✔ Active/Success Pages:\x1b[0m   ${successCount}`);
     console.log(`\x1b[31m✘ Failed/Error Pages:\x1b[0m     ${failedCount}`);
-    console.log(`\x1b[34mℹ Unique Techs Found:\x1b[0m     ${this.technologies.size}`);
-    console.log(`\x1b[34mℹ Blog Articles Found:\x1b[0m    ${this.blogArticles.size}`);
+    console.log(`\x1b[34mℹ Unique Techs Found:\x1b[0m     ${techCount}`);
+    console.log(`\x1b[34mℹ Blog Articles Found:\x1b[0m    ${blogCount}`);
 
     console.log(`\n\x1b[1m\x1b[33m--- ACTIVE WORKERS STATUS ---\x1b[0m`);
     this.workerStatus.forEach((status, i) => {
@@ -285,12 +314,8 @@ class ScanCoordinator {
           console.log(`\n\x1b[32mScan phase finished successfully!\x1b[0m\n`);
           
           // Print failures summary if any
-          const failures = [];
-          for (const res of this.pagesResult.values()) {
-            if (!res.success) {
-              failures.push(res);
-            }
-          }
+          const failuresQuery = this.db.prepare(`SELECT url, error FROM pages WHERE success = 0`);
+          const failures = failuresQuery.all();
           if (failures.length > 0) {
             console.log(`\x1b[1m\x1b[31m--- FAILED PAGES REPORT ---\x1b[0m`);
             failures.forEach(f => {
@@ -329,36 +354,25 @@ class ScanCoordinator {
     this.workerStatus[worker.index] = 'Idle';
     const pageUrl = result.url;
     
-    // Save page status
-    this.pagesResult.set(pageUrl, {
-      url: pageUrl,
-      success: result.success,
-      status: result.status,
-      error: result.error,
-      technologies: result.success ? result.technologies : [],
-      blogArticles: result.success ? result.blogArticles : []
-    });
-
-    // Save progress to JSON cache
-    this.saveCache();
+    // Save page status straight to database sync (eliminates memory leak risk on massive runs)
+    this.insertPageStmt.run(
+      pageUrl,
+      result.success ? 1 : 0,
+      result.status || null,
+      result.error || null,
+      JSON.stringify(result.success ? result.technologies : []),
+      JSON.stringify(result.success ? result.blogArticles : [])
+    );
 
     if (result.success) {
-      // Accumulate Blog & Article URLs
+      // Accumulate Blog & Article URLs in DB
       result.blogArticles.forEach(url => {
-        if (!this.blogArticles.has(url)) {
-          this.blogArticles.set(url, pageUrl);
-        }
+        this.insertBlogStmt.run(url, pageUrl);
       });
 
-      // Accumulate Technologies
+      // Accumulate Technologies in DB
       result.technologies.forEach(tech => {
-        if (!this.technologies.has(tech.name)) {
-          this.technologies.set(tech.name, {
-            category: tech.category,
-            pages: new Set()
-          });
-        }
-        this.technologies.get(tech.name).pages.add(pageUrl);
+        this.insertTechStmt.run(tech.name, tech.category, pageUrl);
       });
 
       // Process newly discovered URLs from page links
@@ -395,20 +409,36 @@ class ScanCoordinator {
   }
 
   getCompiledData() {
-    // 1. Pages list (Without duplicates, sorted)
-    const sortedPages = Array.from(this.pagesResult.values()).sort((a, b) => a.url.localeCompare(b.url));
+    // 1. Pages list (Without duplicates, sorted by URL)
+    const pagesQuery = this.db.prepare(`SELECT url, success, status, error FROM pages ORDER BY url ASC`);
+    const sortedPages = pagesQuery.all().map(row => ({
+      url: row.url,
+      success: row.success === 1,
+      status: row.status,
+      error: row.error
+    }));
 
     // 2. Blog and Article URLs (Without duplicate URLs)
-    const uniqueBlogs = Array.from(this.blogArticles.entries()).map(([url, source]) => ({ url, source }));
+    const blogsQuery = this.db.prepare(`SELECT url, source FROM blog_articles ORDER BY url ASC`);
+    const uniqueBlogs = blogsQuery.all();
 
     // 3. Technologies compiled
-    const compiledTech = Array.from(this.technologies.entries()).map(([techName, data]) => {
-      return {
-        name: techName,
-        category: data.category,
-        pages: Array.from(data.pages)
-      };
-    }).sort((a, b) => b.pages.length - a.pages.length);
+    const techQuery = this.db.prepare(`SELECT name, category, page FROM technologies`);
+    const techRows = techQuery.all();
+
+    const techMap = new Map();
+    techRows.forEach(row => {
+      if (!techMap.has(row.name)) {
+        techMap.set(row.name, {
+          name: row.name,
+          category: row.category,
+          pages: []
+        });
+      }
+      techMap.get(row.name).pages.push(row.page);
+    });
+
+    const compiledTech = Array.from(techMap.values()).sort((a, b) => b.pages.length - a.pages.length);
 
     return {
       pages: sortedPages,
@@ -539,6 +569,24 @@ async function main() {
     console.log(`Excel report saved to: \x1b[36m${outputPath}\x1b[0m`);
   } catch (error) {
     console.error(`\x1b[31mError generating Excel file: ${error.message}\x1b[0m`);
+  } finally {
+    // Ensure database connection is closed
+    if (coordinator && coordinator.db) {
+      try {
+        coordinator.db.close();
+      } catch (err) {}
+    }
+    
+    // Clean up temporary database files and legacy cache files to keep workspace tidy
+    try {
+      if (coordinator && coordinator.dbPath && fs.existsSync(coordinator.dbPath)) {
+        fs.unlinkSync(coordinator.dbPath);
+      }
+      const oldJsonCache = path.join(process.cwd(), `${baseDomain}_visited.json`);
+      if (fs.existsSync(oldJsonCache)) {
+        fs.unlinkSync(oldJsonCache);
+      }
+    } catch (err) {}
   }
 }
 
